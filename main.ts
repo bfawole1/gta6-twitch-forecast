@@ -32,6 +32,11 @@
 //   5%-95% band covers about 90% of scored hours on the practice cases), added to
 //   the fitted median in log space. Pinball on the log scale rewards true
 //   predictive quantiles, so the band is the distribution's, not a guess.
+//   One more term: the band widens when the target's hour-1 magnitude sits
+//   outside the comparables' centre (beyond 1 standard deviation, +0.15 log
+//   spread per SD), because the regression is extrapolating there — which is
+//   exactly the final case, where GTA VI's hour 1 will likely dwarf every
+//   comparable's. In-range targets are untouched.
 //
 //   Fallbacks (never crash, never emit an invalid output): an hour with fewer
 //   than 5 usable comparables falls back to the house baseline's widening
@@ -69,6 +74,11 @@ const KERNEL_BW = 1.5;
 const WEIGHT_FLOOR = 0.15;
 /** Shrinkage of the residual spread (calibrated to ~90% coverage). */
 const SPREAD_SHRINK = 0.85;
+/** Extra log-spread per standard deviation the target's hour-1 magnitude sits
+ *  outside the comparables' centre, applied only beyond 1 SD. GTA VI's hour 1
+ *  will likely be far larger than any comparable's, so the band must widen
+ *  when the regression extrapolates; in-range targets are untouched. */
+const EXTRAP_K = 0.15;
 /** A comparable is kept only when hour1/peak is inside this band. */
 const RATIO_MIN = 0.02;
 const RATIO_MAX = 0.9;
@@ -173,12 +183,18 @@ const hourQuantiles = (curves: Curve[], p1: number, h: number): number[] => {
   const b = sxx > 1e-12 ? sxy / sxx : 0;
   const a = my - b * mx;
   const mu = a + b * logP1;
+  // Widen the band when the target's hour-1 magnitude sits outside the
+  // comparables' centre: the regression is extrapolating there, so the
+  // honest quantiles are wider. In-range targets (d <= 1) are untouched.
+  const sdx = Math.sqrt(sxx / sw);
+  const d = sdx > 1e-9 ? Math.abs(logP1 - mx) / sdx : 0;
+  const widen = 1 + EXTRAP_K * Math.max(0, d - 1);
   // Residuals around the fitted line, weights floored so the spread reflects
   // the whole kept set, not just the nearest one or two comparables.
   const residuals: [number, number][] = pts.map(([x, y, w]) => [y - (a + b * x), Math.max(w, WEIGHT_FLOOR)]);
   const qs = LEVELS.map((tau) => {
     const r = weightedQuantile(residuals, tau);
-    return p1 * Math.exp(mu + SPREAD_SHRINK * r);
+    return p1 * Math.exp(mu + SPREAD_SHRINK * r * widen);
   });
   // Clamp to the allowed range and keep the row non-decreasing.
   const out: number[] = [];
